@@ -5,6 +5,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from ppo_model import getmap
 import torch as th
 from pathlib import Path
+from typing import Optional
 
 
 from stable_baselines3.common.distributions import (
@@ -78,7 +79,7 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
 
 # print(getmap.load_shared_arrays()[1])
 
-def get_agent_act_list():
+def get_agent_act_list(model_path: Optional[str] = None):
 
     resource = getmap.load_shared_arrays()[0]
     build = getmap.load_shared_arrays()[1]
@@ -89,13 +90,18 @@ def get_agent_act_list():
     env.reset()
     act_list = env.action_list
     # model = PPO(MaskedMultiInputPolicy, env=env, verbose=1, policy_kwargs={'model': None},gamma=0.98)
-    model_path = Path(__file__).resolve().parent / "ppo_model.zip"
-    model = PPO.load(str(model_path), env=env, gamma=0.98, custom_objects={"policy_class": MaskedMultiInputPolicy})
+    default_model = Path(__file__).resolve().parent / "ppo_model.zip"
+    chosen = Path(model_path) if model_path else default_model
+    if not chosen.exists():
+        # fallback to default if provided path invalid
+        chosen = default_model
+    model = PPO.load(str(chosen), env=env, gamma=0.98, custom_objects={"policy_class": MaskedMultiInputPolicy})
 
     model.set_env(env)
     model.policy.model = model
     # model.learn(total_timesteps=10000)
-    model.save(str(model_path))
+    # keep model path stable
+    model.save(str(chosen))
 
     obs, info = env.reset()
     agent_act = []

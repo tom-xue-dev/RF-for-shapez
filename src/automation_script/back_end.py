@@ -340,7 +340,7 @@ def place_single_object( data_list, cell_size):
      start_position = visualize()
      place_object(data_list, cell_size, start_position)
 
-def run_place_single_object():
+def run_place_single_object(model_path=None):
     global scaleFactor
     global scroll_offset
     global scroll_offset_scaled
@@ -357,13 +357,18 @@ def run_place_single_object():
     cell_size = 50 * scaleFactor
     scroll_offset = load_scroll_offset()
     scroll_offset_scaled = (scroll_offset[0] * scaleFactor, scroll_offset[1] * scaleFactor)
-    data_list = get_agent_act_list()
+    data_list = get_agent_act_list(model_path=model_path)
     place_single_object( data_list, cell_size)
 
-def main():
-    run_place_single_object()
+def run(model_path=None, steps=None):
+    # steps kept for compatibility; not used in current flow
+    run_place_single_object(model_path=model_path)
 
-main()
+def main():
+    run()
+
+if __name__ == "__main__":
+    main()
 
 
 

@@ -2,6 +2,7 @@ import sys
 import os
 import importlib.util
 import traceback
+from pathlib import Path
 from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QHBoxLayout, QTextEdit, QPushButton, QLineEdit, QFileDialog, QScrollArea, QLabel
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QWaitCondition, QMutex
 import re  # For sanitizing the file name
@@ -11,10 +12,11 @@ class FileExecutorThread(QThread):
     output_signal = pyqtSignal(str)
     pause_signal = pyqtSignal(bool)
 
-    def __init__(self, file_path, steps):
+    def __init__(self, file_path, steps, model_path=None):
         super().__init__()
         self.file_path = file_path
         self.steps = steps
+        self.model_path = model_path
         self._pause = False
         self._pause_cond = QWaitCondition()
         self._mutex = QMutex()
@@ -25,19 +27,17 @@ class FileExecutorThread(QThread):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
+            # Prefer a 'run(model_path=None, steps=None)' entry
             if hasattr(module, 'run'):
-                self.output_signal.emit(f"Running {self.file_path} with steps {self.steps}...")
-                for i in range(self.steps if self.steps else 10):  # Example of steps iteration
-                    self._mutex.lock()
-                    while self._pause:
-                        self._pause_cond.wait(self._mutex)
-                    self._mutex.unlock()
-
-                    # Example logic for each step (replace with real logic from the script)
-                    result = module.run(i) if hasattr(module, 'run') else None
-                    self.output_signal.emit(f"Step {i}: {result}")
+                self.output_signal.emit(f"Running {self.file_path} with model: {self.model_path or '(default)'}...")
+                result = module.run(self.model_path, self.steps)
+                if result is not None:
+                    self.output_signal.emit(str(result))
+            elif hasattr(module, 'main'):
+                self.output_signal.emit(f"Running main() in {self.file_path} ...")
+                module.main()
             else:
-                self.output_signal.emit(f"Executed {self.file_path}, but no 'run' function found.")
+                self.output_signal.emit(f"Executed {self.file_path}, but no 'run' or 'main' function found.")
         except Exception as e:
             error_message = f"Error during execution: {traceback.format_exc()}"
             self.output_signal.emit(error_message)
@@ -70,8 +70,8 @@ class MainWindow(QMainWindow):
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         self.scroll_area.setWidget(self.scroll_content)
 
-        # Create initial "Choose Script" button
-        self.choose_model_button = QPushButton("Choose Script")
+        # Create initial "Choose Model" button
+        self.choose_model_button = QPushButton("Choose Model")
         self.choose_model_button.setStyleSheet("""
             QPushButton {
                 background-color: #0078d7;
@@ -166,8 +166,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         self.executor_thread = None
-        self.selected_python_file = None  # Track the currently selected Python file
+        # Auto-select back_end.py as the script to run
+        self.selected_python_file = str((Path(__file__).parent / 'back_end.py').resolve())
+        self.selected_model_file = None  # Track currently selected model (.zip)
         self.file_buttons = {}  # Dictionary to store file paths and associated buttons
+
+        # Inform user
+        self.text_edit.append(f"Auto-selected script: {self.selected_python_file}")
 
     def sanitize_variable_name(self, file_name):
         """Sanitize the file name to create a valid Python variable name."""
@@ -175,13 +180,13 @@ class MainWindow(QMainWindow):
         return sanitized_name
 
     def choose_model(self):
-        # Open file dialog to select a Python script only.
+        # Open file dialog to select a PPO model file (.zip)
         options = QFileDialog.Options()
         file_name, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose Python Script",
+            "Choose PPO Model",
             "",
-            "Python Files (*.py)",
+            "Zip Files (*.zip)",
             options=options,
         )
         if file_name:
@@ -189,10 +194,10 @@ class MainWindow(QMainWindow):
 
 
     def add_file_button(self, file_path):
-        """Add a button for the selected file and store its path."""
+        """Add a button for the selected model (.zip) and store its path."""
         # Validate extension
-        if not file_path.lower().endswith(".py"):
-            self.text_edit.append("Please choose a Python script (.py), not other files.")
+        if not file_path.lower().endswith(".zip"):
+            self.text_edit.append("Please choose a PPO model file (.zip).")
             return
         file_name = os.path.basename(file_path)
         variable_name = self.sanitize_variable_name(os.path.splitext(file_name)[0])  # Remove extension and sanitize
@@ -204,7 +209,7 @@ class MainWindow(QMainWindow):
 
         # Create a global variable with the sanitized name
         globals()[variable_name] = file_path
-        self.text_edit.append(f"Created variable '{variable_name}' for file: {file_path}")
+        self.text_edit.append(f"Created model variable '{variable_name}': {file_path}")
 
         # Create a layout for each variable with its name, input, and buttons
         var_layout = QVBoxLayout()
@@ -223,9 +228,9 @@ class MainWindow(QMainWindow):
         update_button.clicked.connect(lambda: self.update_variable(variable_name, var_input.text()))
         var_layout.addWidget(update_button)
 
-        # Run button to execute the file linked to the variable
-        run_button = QPushButton(f"Run {variable_name}")
-        run_button.clicked.connect(lambda: self.file_clicked(file_path))
+        # Use button to mark this as the active model
+        run_button = QPushButton(f"Use model: {variable_name}")
+        run_button.clicked.connect(lambda: self.model_clicked(file_path))
         var_layout.addWidget(run_button)
 
         # Clear button to remove the variable
@@ -254,33 +259,32 @@ class MainWindow(QMainWindow):
             if widget:
                 widget.setParent(None)
 
-    def file_clicked(self, file_path):
-        """Handle file button click and set selected Python file."""
-        self.text_edit.append(f"Selected: {file_path}")
-        self.selected_python_file = file_path
+    def model_clicked(self, file_path):
+        """Handle clicking a model variable and set selected model file."""
+        self.text_edit.append(f"Selected model: {file_path}")
+        self.selected_model_file = file_path
 
     def start_execution(self):
         """Start execution of the selected Python file."""
         if self.selected_python_file:
-            if not self.selected_python_file.lower().endswith(".py"):
-                self.text_edit.append("Selected file is not a Python script (.py). Please reselect.")
-                return
             steps = self.input_steps.text()
             if steps.isdigit():
                 steps = int(steps)
             else:
                 steps = None
 
-            self.text_edit.append(f"Executing {self.selected_python_file} with steps: {steps}...")
+            self.text_edit.append(
+                f"Executing script: {self.selected_python_file}\nUsing model: {self.selected_model_file or '(default)'}\n"
+            )
 
-            self.executor_thread = FileExecutorThread(self.selected_python_file, steps)
+            self.executor_thread = FileExecutorThread(self.selected_python_file, steps, model_path=self.selected_model_file)
             self.executor_thread.output_signal.connect(self.append_output)
             self.executor_thread.start()
 
             # Enable pause button after starting
             self.pause_button.setEnabled(True)
         else:
-            self.text_edit.append("No valid Python script selected.")
+            self.text_edit.append("No valid script configured.")
 
     def append_output(self, output):
         """Display output in the text edit."""
