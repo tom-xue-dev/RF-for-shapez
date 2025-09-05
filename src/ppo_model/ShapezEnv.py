@@ -82,7 +82,8 @@ class ShapezEnv(gymnasium.Env):
         self.original_bld = np.array(build)
         self.grid_rsc = np.array(res)
         self.grid_bld = self.original_bld.copy()
-        self.reward_grid = np.full(self.grid_bld.shape, -1)
+        # store per-cell last reward (float) for potential removal refund logic
+        self.reward_grid = np.full(self.grid_bld.shape, -1.0, dtype=np.float32)
         self.machines = {}
         self.target_shape = target_shape
         self.total_reward = 0
@@ -90,18 +91,23 @@ class ShapezEnv(gymnasium.Env):
         self.act_mask = None
         self.create_action_space()
         self.act_dict = {(action, tuple(pos)): idx for idx, (action, pos) in enumerate(self.action_list)}
+        # Normalize observations to reduce scale issues and keep values in [0, 1]
+        # - grid: empty (-1) -> 0, others scaled by 1/5000
+        # - target_shape: scaled by 1/60
+        self._grid_scale = 5000.0
+        self._target_scale = 60.0
         self.observation_space = spaces.Dict({
             'grid': spaces.Box(
-                low=0,
-                high=np.max(5000),
+                low=0.0,
+                high=1.0,
                 shape=(grid_shape[0], grid_shape[1]),
-                dtype=np.int32
+                dtype=np.float32
             ),
             'target_shape': spaces.Box(
-                low=0,
-                high=60,
+                low=0.0,
+                high=1.0,
                 shape=(1,),
-                dtype=np.int32
+                dtype=np.float32
             )
         })
 
@@ -109,9 +115,15 @@ class ShapezEnv(gymnasium.Env):
         """
         :return:current observation of the game.
         """
+        # Build normalized observation
+        grid = self.grid_bld.astype(np.float32)
+        # map empty (-1) to 0, keep others >= 0
+        grid = np.where(grid < 0, 0.0, grid)
+        grid = grid / self._grid_scale
+        ts = np.array([self.target_shape / self._target_scale], dtype=np.float32)
         observation = {
-            'grid': self.grid_bld,
-            'target_shape': np.array([self.target_shape], dtype=np.int32)
+            'grid': grid,
+            'target_shape': ts,
         }
         return observation
 
@@ -136,7 +148,7 @@ class ShapezEnv(gymnasium.Env):
                    - info (dict): An empty dictionary reserved for additional info.
            """
         self.total_reward = 0
-        self.reward_grid = np.full(self.grid_bld.shape, -1)
+        self.reward_grid = np.full(self.grid_bld.shape, -1.0, dtype=np.float32)
         self.steps = 0
         self.grid_bld = self.original_bld.copy()
         self.machines.clear()
@@ -222,7 +234,8 @@ class ShapezEnv(gymnasium.Env):
         if self.check_goal() == self.required_routes:
             # complete the game task
             done = True
-            reward += self.max_step * 10
+            # modest terminal bonus scaled for stability
+            reward += 5.0 * self.required_routes
             self.total_reward += reward
             self.success_times += 1
             print(self.total_reward)
@@ -415,40 +428,29 @@ class ShapezEnv(gymnasium.Env):
         :return: the reward of the placing action
         """
         hub_positions = np.argwhere(self.grid_bld // 100 == 21)
-        if hub_positions.size > 0:
-            hub_pos = hub_positions[0]
+        if hub_positions.size == 0:
+            return 0.0
+        hub_pos = hub_positions[0]
+        # proximity component in [0, 1]
+        dis = float((hub_pos[0] - position[0]) ** 2 + (hub_pos[1] - position[1]) ** 2)
+        max_distance = float((self.grid_bld.shape[0] ** 2) * 2)
+        proximity = max(0.0, 1.0 - dis / max_distance)
+        distance_reward = 0.3 * proximity
 
-        hub_pos = np.argwhere(self.grid_bld // 100 == 21)[0]
-        x_pos = True if position[0] < hub_pos[0] else False
-        y_pos = True if position[1] < hub_pos[1] else False
-        dis = (hub_pos[0] - position[0]) ** 2 + (hub_pos[1] - position[1]) ** 2
-        max_distance = (self.grid_bld.shape[0] ** 2) * 2
-        distance_reward = max_distance - dis
-        normalized_reward = distance_reward / max_distance
-        distance_reward = normalized_reward * 20
-        direction_reward = 0
-
-        if x_pos is True and y_pos is True:
-            if direction == 2 or direction == 4:
-                direction_reward = 10
-            else:
-                direction_reward = -10
-        elif x_pos is False and y_pos is True:
-            if direction == 1 or direction == 4:
-                direction_reward = 10
-            else:
-                direction_reward = -10
-        elif x_pos is True and y_pos is False:
-            if direction == 2 or direction == 3:
-                direction_reward = 10
-            else:
-                direction_reward = -10
-        elif x_pos is False and y_pos is False:
-            if direction == 1 or direction == 3:
-                direction_reward = 10
-            else:
-                direction_reward = -10
-        return distance_reward + direction_reward
+        # coarse facing heuristic: prefer pointing roughly toward hub
+        x_sign = 1 if position[0] < hub_pos[0] else -1
+        y_sign = 1 if position[1] < hub_pos[1] else -1
+        good = False
+        if x_sign == 1 and y_sign == 1:
+            good = direction in (2, 4)
+        elif x_sign == -1 and y_sign == 1:
+            good = direction in (1, 4)
+        elif x_sign == 1 and y_sign == -1:
+            good = direction in (2, 3)
+        else:
+            good = direction in (1, 3)
+        direction_reward = 0.2 if good else -0.2
+        return float(distance_reward + direction_reward)
 
     def calculate_conveyor_reward(self, position, direction):
         """
@@ -459,13 +461,15 @@ class ShapezEnv(gymnasium.Env):
         :param direction:the direction of the belt
         :return:reward
         """
-        reward = 0
+        reward = 0.0
         path = self.retrieve_path(position, direction)
+        if not path:
+            return -0.02
         start = path[-1]
         current_shape = None
         if self.grid_bld[start] // 100 != 22:
-            # not connected to the start
-            return -5
+            # not connected to a miner path
+            return -0.02
 
         for p in reversed(path):
             if isinstance(self.machines[p], Miner):
@@ -473,30 +477,33 @@ class ShapezEnv(gymnasium.Env):
             elif isinstance(self.machines[p], Cutter):
                 shapes = process_cut(current_shape)
                 if shapes[0] != -1:
-                    # valid cutter
-                    if self.machines[p].position == p:
-                        # main pos
-                        current_shape = shapes[0]
-                    else:
-                        # sub_pos
-                        current_shape = shapes[1]
+                    current_shape = shapes[0] if self.machines[p].position == p else shapes[1]
 
         hub_pos = self.find_closet_hub(position)
         next_pos = self._get_next_position(position, direction)
-        if hub_pos == None or next_pos == None:
-            # no valid closet hub meaningless to continue placing belt
-            return -5
+        if hub_pos is None or next_pos is None:
+            return -0.02
+
+        # connectivity bonus
+        reward += 0.1
+
+        # shape bonus if carrying valid/potential shape
         if self.check_valid_shape(current_shape):
-            # conveying the correct shape
-            reward += (self.grid_bld.shape[0] - distance(hub_pos, position)) / 2
+            reward += 0.2
+
+        # proximity to hub (normalized)
+        max_manhattan = float(self.grid_bld.shape[0] + self.grid_bld.shape[1])
+        prox = max(0.0, 1.0 - (distance(hub_pos, position) / max_manhattan))
+        reward += 0.2 * prox
+
+        # moving closer vs further
+        if distance(hub_pos, next_pos) < distance(hub_pos, position):
+            reward += 0.05
         else:
-            return -20
-        if distance(hub_pos, position) < distance(hub_pos, next_pos):
-            reward = -5
-        else:
-            # closer to the hub
-            reward += 5
-        return reward
+            reward -= 0.02
+
+        # clip to reasonable bounds
+        return float(np.clip(reward, -0.3, 0.6))
 
     def calculate_trash_reward(self, position):
         """
@@ -505,7 +512,7 @@ class ShapezEnv(gymnasium.Env):
         :return: the reward that place the building
         """
         start = self._get_pre_position(position, 0)
-        reward = 0
+        reward = 0.0
         for pos in start:
             if pos is None or self.grid_bld[pos] == -1:
                 continue
@@ -525,11 +532,11 @@ class ShapezEnv(gymnasium.Env):
                         else:
                             current_shape = shapes[1]
 
-            if self.check_valid_shape(current_shape) or current_shape is None:
-                reward -= 50
+            if current_shape is None or self.check_valid_shape(current_shape):
+                reward -= 0.1
             else:
-                reward += 10
-        return reward
+                reward += 0.1
+        return float(reward)
 
     def calculate_cutter_reward(self, position, direction):
         """
@@ -551,10 +558,7 @@ class ShapezEnv(gymnasium.Env):
                 else:
                     # sub exit:
                     current_shape = process_cut(current_shape)[1]
-        if self.check_valid_shape(current_shape):
-            return 100
-        else:
-            return -100
+        return 0.4 if self.check_valid_shape(current_shape) else -0.1
 
     def handle_place(self, machine_type, position, direction):
         # handle the place event
@@ -564,7 +568,7 @@ class ShapezEnv(gymnasium.Env):
         # return:Canplace: to show if we can handle the action successfully
         # return:reward:the reward of the action
         new_machine = Machine
-        reward = -1
+        reward = 0.0
         if machine_type == 0:  # action is remove
             machine_type, direction = self.extract_buildings(position)
             if machine_type == 23:
@@ -582,14 +586,14 @@ class ShapezEnv(gymnasium.Env):
                     return -1
                 else:
                     self.grid_bld[position] = -1
-                    reward = -self.reward_grid[position] \
-                        if self.reward_grid[position] > 0 else -(self.reward_grid)[position] / 2
+                    stored = float(self.reward_grid[position])
+                    reward = -stored if stored > 0 else -0.5 * stored
                     del self.machines[position]
                     self.reward_grid[position] = -1
             else:
                 self.grid_bld[position] = -1
-                reward = -self.reward_grid[position] \
-                    if self.reward_grid[position] > 0 else -self.reward_grid[position] / 2
+                stored = float(self.reward_grid[position])
+                reward = -stored if stored > 0 else -0.5 * stored
                 del self.machines[position]
                 self.reward_grid[position] = -1
             return reward
@@ -604,15 +608,15 @@ class ShapezEnv(gymnasium.Env):
             self.grid_bld[position] = 31 * 100 + direction
             new_machine = Conveyor(position, direction)
             self.machines[position] = new_machine
-            self.reward_grid[position] = reward
             reward = self.calculate_conveyor_reward(position, direction)
+            self.reward_grid[position] = reward
         elif machine_type == 24:
             # place trash
             new_machine = Trash(position, direction)
             self.machines[position] = new_machine
-            self.reward_grid[position] = reward
             self.grid_bld[position] = 24 * 100
             reward = self.calculate_trash_reward(position)
+            self.reward_grid[position] = reward
         elif machine_type == 23:
             # place cutter
             new_machine = Cutter(position, direction)
@@ -631,10 +635,11 @@ class ShapezEnv(gymnasium.Env):
                 del self.machines[sub_pos]
                 self.grid_bld[position] = -1
                 self.grid_bld[sub_pos] = -1
-                return -20
-        reward -= 1
+                return -0.2
+        # small step penalty to prefer shorter solutions
+        reward -= 0.01
         self.reward_grid[position] = reward
-        return reward
+        return float(reward)
 
     def _get_next_position(self, position: Tuple[int, int], direction: int):
         """
@@ -955,12 +960,24 @@ class ShapezEnv(gymnasium.Env):
         min_distance = 0x3f3f3f
         closet_pos = None
         hub_poses = np.argwhere(self.grid_bld // 100 == 21)
+        n, m = self.grid_bld.shape
         for hub_pos in hub_poses:
             hub_x, hub_y = hub_pos
             distance = (cur_pos[0] - hub_x) ** 2 + (cur_pos[1] - hub_y) ** 2
             if distance < min_distance:
-                if (self.grid_bld[hub_x - 1][hub_y] == -1 or self.grid_bld[hub_x + 1][hub_y] == -1 or
-                        self.grid_bld[hub_x][hub_y - 1] == -1 or self.grid_bld[hub_x][hub_y + 1] == -1):
+                # Check neighbors in-bound and empty
+                neighbors = [
+                    (hub_x - 1, hub_y),
+                    (hub_x + 1, hub_y),
+                    (hub_x, hub_y - 1),
+                    (hub_x, hub_y + 1),
+                ]
+                has_empty = False
+                for x, y in neighbors:
+                    if 0 <= x < n and 0 <= y < m and self.grid_bld[x, y] == -1:
+                        has_empty = True
+                        break
+                if has_empty:
                     min_distance = distance
                     closet_pos = (hub_x, hub_y)
         return closet_pos

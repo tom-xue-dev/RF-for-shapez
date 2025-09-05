@@ -6,8 +6,8 @@
   <component name="ChangeListManager">
     <list default="true" id="3adedb31-5a2a-4be3-8779-30ce1bd16cdc" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/automation_script/front_end.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/automation_script/front_end.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/ppo_model/PPO.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ppo_model/PPO.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ShapezEnv.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ppo_model/ShapezEnv.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/shapez/exe/exe/Parameter.ini" beforeDir="false" afterPath="$PROJECT_DIR$/src/shapez/exe/exe/Parameter.ini" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />

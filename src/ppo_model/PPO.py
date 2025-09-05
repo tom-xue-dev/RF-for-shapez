@@ -68,10 +68,32 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
     def __init__(self, *args, model=None, **kwargs):
         super(MaskedMultiInputPolicy, self).__init__(*args, **kwargs)
         self.model = model  # 保存 model
+        # default to no action mask until callback provides one
+        self.action_mask = None
 
 
     def set_action_mask(self, action_mask):
         self.action_mask = action_mask
+
+    def _get_original_env(self):
+        env = None
+        try:
+            env = self.model.get_env()  # type: ignore[attr-defined]
+        except Exception:
+            env = None
+        if env is None:
+            env = getattr(self.model, 'env', None)
+        e = env
+        # unwrap VecNormalize / VecEnvWrapper -> DummyVecEnv -> base env
+        depth_guard = 0
+        while hasattr(e, 'venv') and depth_guard < 10:
+            e = getattr(e, 'venv')
+            depth_guard += 1
+        if hasattr(e, 'envs') and e.envs:
+            base = e.envs[0]
+        else:
+            base = e
+        return getattr(base, 'unwrapped', base)
 
     def _get_action_dist_from_latent(self, latent_pi: th.Tensor) -> Distribution:
         """
@@ -80,8 +102,9 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
         :param latent_pi: Latent code for the actor
         :return: Action distribution
         """
-        original_env = self.model.env.envs[0].unwrapped
-        self.action_mask = original_env.get_action_mask()
+        # IMPORTANT: Do NOT recompute mask from live env here, as it breaks
+        # PPO training on replayed batches (mask would mismatch old observations).
+        # Expect mask to be set via callback during rollout, or remain None.
         mean_actions = self.action_net(latent_pi)
         if isinstance(self.action_dist, DiagGaussianDistribution):
             return self.action_dist.proba_distribution(mean_actions, self.log_std)
@@ -92,15 +115,22 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
             if self.action_mask is not None:
                 # one_indices = [index for index, value in enumerate(self.action_mask) if value == 1]
                 # print(f"Indices of 1s in action_mask: {one_indices}")
-                action_mask_tensor = th.tensor(self.action_mask, dtype=th.float32).to(action_logits.device)
-                action_logits = action_logits + (action_mask_tensor - 1) * 1e9
+                action_mask_tensor = th.tensor(self.action_mask, dtype=th.float32, device=action_logits.device)
+                # support per-batch (B, A) or flat (A,) masks
+                if action_mask_tensor.dim() == 1:
+                    action_logits = action_logits + (action_mask_tensor - 1) * 1e6
+                else:
+                    action_logits = action_logits + (action_mask_tensor - 1) * 1e6
             return self.action_dist.proba_distribution(action_logits=action_logits)
 
         elif isinstance(self.action_dist, MultiCategoricalDistribution):
             action_logits = mean_actions
             if self.action_mask is not None:
-                action_mask_tensor = th.tensor(self.action_mask, dtype=th.float32).to(action_logits.device)
-                action_logits = action_logits + (action_mask_tensor - 1) * 1e9
+                action_mask_tensor = th.tensor(self.action_mask, dtype=th.float32, device=action_logits.device)
+                if action_mask_tensor.dim() == 1:
+                    action_logits = action_logits + (action_mask_tensor - 1) * 1e6
+                else:
+                    action_logits = action_logits + (action_mask_tensor - 1) * 1e6
 
             return self.action_dist.proba_distribution(action_logits=action_logits)
 
@@ -115,7 +145,7 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
 
 
 
-# print(getmap.load_shared_arrays()[1])
+print(getmap.load_shared_arrays()[1])
 
 def get_agent_act_list(model_path: Optional[str] = None):
 
@@ -218,6 +248,14 @@ def train_model(total_timesteps: int = 10000,
         env=env,
         verbose=1,
         gamma=gamma,
+        learning_rate=1e-4,
+        ent_coef=0.01,
+        clip_range=0.1,
+        n_steps=2048,
+        batch_size=128,
+        gae_lambda=0.95,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
         policy_kwargs={'model': None},
         device=use_device,
     )
