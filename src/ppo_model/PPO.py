@@ -145,7 +145,7 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
 
 
 
-print(getmap.load_shared_arrays()[1])
+# print(getmap.load_shared_arrays()[1])
 
 def get_agent_act_list(model_path: Optional[str] = None):
 

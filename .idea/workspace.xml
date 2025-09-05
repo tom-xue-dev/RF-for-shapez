@@ -6,8 +6,17 @@
   <component name="ChangeListManager">
     <list default="true" id="3adedb31-5a2a-4be3-8779-30ce1bd16cdc" name="更改" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/environment.yml" beforeDir="false" afterPath="$PROJECT_DIR$/environment.yml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/readme.md" beforeDir="false" afterPath="$PROJECT_DIR$/readme.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements-pip.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/script.zip" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/src/ppo_model/PPO.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ppo_model/PPO.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/ppo_model/ShapezEnv.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/ppo_model/ShapezEnv.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_model - backup.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_model.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_shapez_model_2.1.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_shapez_model_2.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_shapez_model_2_80w rounds.zip" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/ppo_model/ppo_shapez_model_3.zip" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/src/shapez/exe/exe/Parameter.ini" beforeDir="false" afterPath="$PROJECT_DIR$/src/shapez/exe/exe/Parameter.ini" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -101,6 +110,7 @@
       <workItem from="1744453850756" duration="19000" />
       <workItem from="1757033029437" duration="377000" />
       <workItem from="1757033561717" duration="8537000" />
+      <workItem from="1757071151529" duration="604000" />
     </task>
     <servers />
   </component>
