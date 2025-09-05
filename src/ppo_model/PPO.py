@@ -6,6 +6,7 @@ from ppo_model import getmap
 import torch as th
 from pathlib import Path
 from typing import Optional
+import time
 
 
 from stable_baselines3.common.distributions import (
@@ -16,6 +17,43 @@ from stable_baselines3.common.distributions import (
     MultiCategoricalDistribution,
     StateDependentNoiseDistribution,
 )
+
+def _select_device(prefer_cuda: bool = True) -> str:
+    try:
+        return "cuda" if prefer_cuda and th.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+_torch_load_patched = False
+
+def _patch_torch_load_weights_only():
+    """Patch torch.serialization.load to ignore unknown 'weights_only' kwarg.
+    Some older torch versions do not support this kwarg used by SB3.
+    """
+    global _torch_load_patched
+    if _torch_load_patched:
+        return
+    try:
+        import torch.serialization as _ts  # type: ignore
+        _orig = _ts.load
+
+        def _wrapped(*args, **kwargs):  # type: ignore
+            if 'weights_only' in kwargs:
+                kwargs.pop('weights_only')
+            return _orig(*args, **kwargs)
+
+        _ts.load = _wrapped  # type: ignore
+        try:
+            import torch as _troot  # type: ignore
+            _troot.load = _wrapped  # ensure torch.load also patched
+        except Exception:
+            pass
+        _torch_load_patched = True
+    except Exception:
+        # If patching fails, proceed; load may still work on newer torch
+        pass
+
 
 class ActionMaskCallback(BaseCallback):
     def __init__(self, env, verbose=0):
@@ -95,7 +133,16 @@ def get_agent_act_list(model_path: Optional[str] = None):
     if not chosen.exists():
         # fallback to default if provided path invalid
         chosen = default_model
-    model = PPO.load(str(chosen), env=env, gamma=0.98, custom_objects={"policy_class": MaskedMultiInputPolicy})
+    # ensure compatibility with older torch when loading sb3 zips
+    _patch_torch_load_weights_only()
+    device = _select_device()
+    model = PPO.load(
+        str(chosen),
+        env=env,
+        gamma=0.98,
+        custom_objects={"policy_class": MaskedMultiInputPolicy},
+        device=device,
+    )
 
     model.set_env(env)
     model.policy.model = model
@@ -125,3 +172,64 @@ def get_agent_act_list(model_path: Optional[str] = None):
 # from stable_baselines3.common.evaluation import evaluate_policy
 # mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
 # print(f"平均奖励: {mean_reward} +/- {std_reward}")
+
+
+def train_model(total_timesteps: int = 10000,
+                save_dir: Optional[str] = None,
+                model_name: Optional[str] = None,
+                gamma: float = 0.98,
+                device: Optional[str] = None) -> str:
+    """
+    训练 PPO 模型并保存到目标目录。
+
+    参数:
+    - total_timesteps: 训练步数。
+    - save_dir: 保存目录（默认保存到 ppo_model 目录下的 trained 子目录）。
+    - model_name: 保存文件名（可选，未提供则自动按时间戳生成）。
+    - gamma: 折扣系数。
+
+    返回:
+    - 已保存模型文件的完整路径。
+    """
+    # 载入来自游戏共享内存的地图与目标形状
+    resource, build = getmap.load_shared_arrays()
+    target_shape = getmap.load_needed_shape()
+
+    # 构建环境
+    env = ShapezEnv(build, resource, target_shape=target_shape)
+
+    # 创建保存目录
+    base_dir = Path(__file__).resolve().parent
+    out_dir = Path(save_dir) if save_dir else (base_dir / "trained")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 生成保存文件名
+    if model_name:
+        filename = model_name if model_name.endswith(".zip") else f"{model_name}.zip"
+    else:
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        filename = f"ppo_shapez_model_{ts}.zip"
+    out_path = out_dir / filename
+
+    # 创建模型（带掩码策略）
+    use_device = device or _select_device()
+    model = PPO(
+        MaskedMultiInputPolicy,
+        env=env,
+        verbose=1,
+        gamma=gamma,
+        policy_kwargs={'model': None},
+        device=use_device,
+    )
+    model.policy.model = model  # 让策略可访问 model 和 env
+
+    # 可选：使用回调在每个 step 同步动作掩码
+    callback = ActionMaskCallback(env)
+
+    # 开始训练
+    model.learn(total_timesteps=total_timesteps, callback=callback)
+
+    # 保存模型
+    model.save(str(out_path))
+
+    return str(out_path)

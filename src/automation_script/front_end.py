@@ -52,6 +52,43 @@ class FileExecutorThread(QThread):
         self.pause_signal.emit(self._pause)
 
 
+from typing import Optional
+
+class TrainingThread(QThread):
+    output_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(str)
+
+    def __init__(self, timesteps: int, save_dir: Optional[str], model_name: Optional[str], gamma: Optional[float]):
+        super().__init__()
+        self.timesteps = timesteps
+        self.save_dir = save_dir
+        self.model_name = model_name
+        self.gamma = gamma
+
+    def run(self):
+        try:
+            from ppo_model.PPO import train_model
+            try:
+                import torch as th
+                device_hint = "cuda" if th.cuda.is_available() else "cpu"
+            except Exception:
+                device_hint = "cpu"
+            self.output_signal.emit(
+                f"Training started (timesteps={self.timesteps}, gamma={self.gamma or 0.98}, device={device_hint}, save_dir={self.save_dir or '(default)'}, model_name={self.model_name or '(auto)'})."
+            )
+            out_path = train_model(
+                total_timesteps=int(self.timesteps) if self.timesteps else 10000,
+                save_dir=self.save_dir if self.save_dir else None,
+                model_name=self.model_name if self.model_name else None,
+                gamma=float(self.gamma) if self.gamma else 0.98,
+                device=device_hint,
+            )
+            self.output_signal.emit(f"Training finished. Model saved to: {out_path}")
+            self.finished_signal.emit(out_path)
+        except Exception:
+            self.output_signal.emit(f"Training error: {traceback.format_exc()}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -161,11 +198,51 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(stop_button)
 
         right_layout.addLayout(button_layout)
+
+        # ---- Training controls ----
+        self.train_timesteps = QLineEdit(self)
+        self.train_timesteps.setPlaceholderText("Train timesteps (e.g. 100000)")
+        right_layout.addWidget(self.train_timesteps)
+
+        gamma_row = QHBoxLayout()
+        self.train_gamma = QLineEdit(self)
+        self.train_gamma.setPlaceholderText("Gamma (default 0.98)")
+        gamma_row.addWidget(self.train_gamma)
+        right_layout.addLayout(gamma_row)
+
+        save_dir_row = QHBoxLayout()
+        self.train_save_dir = QLineEdit(self)
+        self.train_save_dir.setPlaceholderText("Save directory (optional)")
+        save_dir_row.addWidget(self.train_save_dir)
+        browse_save_dir_btn = QPushButton("Browse Dir")
+        browse_save_dir_btn.clicked.connect(self.browse_save_dir)
+        save_dir_row.addWidget(browse_save_dir_btn)
+        right_layout.addLayout(save_dir_row)
+
+        self.train_model_name = QLineEdit(self)
+        self.train_model_name.setPlaceholderText("Model name (optional, .zip appended)")
+        right_layout.addWidget(self.train_model_name)
+
+        train_btn = QPushButton("Train Model")
+        train_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                border-radius: 5px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #218838;
+            }
+        """)
+        train_btn.clicked.connect(self.start_training)
+        right_layout.addWidget(train_btn)
         main_layout.addLayout(right_layout)
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
 
         self.executor_thread = None
+        self.training_thread = None
         # Auto-select back_end.py as the script to run
         self.selected_python_file = str((Path(__file__).parent / 'back_end.py').resolve())
         self.selected_model_file = None  # Track currently selected model (.zip)
@@ -314,6 +391,36 @@ class MainWindow(QMainWindow):
         # Reset pause button
         self.pause_button.setText("Pause")
         self.pause_button.setEnabled(False)  # Disable the pause button when stopped
+
+    def browse_save_dir(self):
+        directory = QFileDialog.getExistingDirectory(self, "Choose Save Directory", "")
+        if directory:
+            self.train_save_dir.setText(directory)
+
+    def start_training(self):
+        try:
+            timesteps_text = self.train_timesteps.text().strip()
+            timesteps = int(timesteps_text) if timesteps_text.isdigit() else 10000
+        except Exception:
+            timesteps = 10000
+
+        gamma_text = self.train_gamma.text().strip()
+        try:
+            gamma = float(gamma_text) if gamma_text else 0.98
+        except Exception:
+            gamma = 0.98
+
+        save_dir = self.train_save_dir.text().strip() or None
+        model_name = self.train_model_name.text().strip() or None
+
+        self.text_edit.append(
+            f"Start training with timesteps={timesteps}, gamma={gamma}, save_dir={save_dir or '(default)'}, model_name={model_name or '(auto)'}"
+        )
+
+        self.training_thread = TrainingThread(timesteps, save_dir, model_name, gamma)
+        self.training_thread.output_signal.connect(self.append_output)
+        self.training_thread.finished_signal.connect(lambda p: self.text_edit.append(f"Model ready: {p}"))
+        self.training_thread.start()
 
 
 if __name__ == "__main__":
