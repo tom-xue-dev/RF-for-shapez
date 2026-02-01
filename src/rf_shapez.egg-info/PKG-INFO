@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: rf-shapez
+Version: 0.1.0
+Summary: RL for Shapez project with multiple packages
+Author: Tom Xue
+Requires-Dist: torch
+Requires-Dist: stable-baselines3
+Requires-Dist: gymnasium
+Requires-Dist: pyqt5
+Requires-Dist: pyautogui
+Requires-Dist: pygame

@@ -148,7 +148,6 @@ class MaskedMultiInputPolicy(MultiInputPolicy):
 # print(getmap.load_shared_arrays()[1])
 
 def get_agent_act_list(model_path: Optional[str] = None):
-
     resource = getmap.load_shared_arrays()[0]
     build = getmap.load_shared_arrays()[1]
     target_shape = getmap.load_needed_shape()
@@ -158,16 +157,20 @@ def get_agent_act_list(model_path: Optional[str] = None):
     env.reset()
     act_list = env.action_list
     # model = PPO(MaskedMultiInputPolicy, env=env, verbose=1, policy_kwargs={'model': None},gamma=0.98)
-    default_model = Path(__file__).resolve().parent / "ppo_model.zip"
+    default_model = Path(__file__).resolve().parent / "trained" / "ppo_model.zip"
     chosen = Path(model_path) if model_path else default_model
     if not chosen.exists():
         # fallback to default if provided path invalid
         chosen = default_model
+    # Remove .zip suffix if present, as stable_baselines3.load() will add it automatically
+    chosen_str = str(chosen)
+    if chosen_str.lower().endswith('.zip'):
+        chosen_str = chosen_str[:-4]
     # ensure compatibility with older torch when loading sb3 zips
     _patch_torch_load_weights_only()
     device = _select_device()
     model = PPO.load(
-        str(chosen),
+        chosen_str,
         env=env,
         gamma=0.98,
         custom_objects={"policy_class": MaskedMultiInputPolicy},

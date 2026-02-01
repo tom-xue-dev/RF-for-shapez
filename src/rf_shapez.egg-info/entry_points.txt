@@ -1,0 +1,2 @@
+[console_scripts]
+rf-shapez-automation = automation_script.front_end:main
